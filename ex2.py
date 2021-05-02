@@ -102,7 +102,7 @@ class LabelToImageNet(nn.Module):
     def __init__(self, output_size=28*28):
         super().__init__()
         
-        self.hidden_1 = nn.Linear(10, 20)
+        self.hidden_1 = nn.Linear(1, 20)
         self.hidden_2 = nn.Linear(20, 10)
         self.hidden_3 = nn.Linear(10, 10)
         self.hidden_4 = nn.Linear(10, 250)
@@ -113,7 +113,7 @@ class LabelToImageNet(nn.Module):
         #self.hidden_5 = nn.Linear(*16, 28*28)        
     
     def forward(self, x):
-        x = torch.Tensor([[int(i == z) for i in range(10)] for z in x]).to(device).float()
+        #x = torch.Tensor([[int(i == z) for i in range(10)] for z in x]).to(device).float()
         x = self.hidden_1(x)
         x =F.relu(x)
         x = self.hidden_2(x)
@@ -129,6 +129,21 @@ class LabelToImageNet(nn.Module):
         x = torch.sigmoid(x)
         return x
 
+def get_sequential_model():
+    return nn.Sequential(
+        nn.Linear(1, 20),
+        nn.ReLU(),
+        nn.Linear(20, 10),
+        nn.ReLU(),
+        nn.Linear(10, 10),
+        nn.ReLU(),
+        nn.Linear(10, 250),
+        nn.ReLU(),
+        nn.Linear(250, 500),
+        nn.ReLU(),
+        nn.Linear(500, 28*28),
+        nn.Sigmoid()
+    )
 
 # %%
 lr = 1e-3
@@ -158,7 +173,8 @@ def sample_mnist_pixel_cnn(model, n_classes):
 
 # %%
 
-model = LabelToImageNet().to(device)
+#model = LabelToImageNet().to(device)
+model = get_sequential_model().to(device)
 # alternatively model = torch.nn.Sequential( ?? )
 
 optimizer = optim.Adam(model.parameters(), lr, weight_decay=reg)
@@ -184,12 +200,12 @@ for epoch in range(num_epochs):
 
         output = model(labels)
 
-        outputs = torch.stack(
-            [torch.flatten(1-output), torch.flatten(output)], dim=1
-            )#.reshape(1, -1, num_output_classes)
+        #outputs = torch.stack(
+        #    [torch.flatten(1-output), torch.flatten(output)], dim=1
+        #   )#.reshape(1, -1, num_output_classes)
         
-        #nll = nn.MSELoss()(torch.flatten(output), imgs.float())
-        nll = criterion(outputs, imgs.long())
+        nll = nn.MSELoss()(torch.flatten(output), imgs.float())
+        #nll = criterion(outputs, imgs.long())
         nll.backward()
         optimizer.step()
         
@@ -211,12 +227,12 @@ for epoch in range(num_epochs):
             val_imgs = torch.flatten(torch.reshape(minibatch[0].to(device), (-1, flatten_img_size)))
 
             output = model(val_labels)
-            val_outputs = torch.stack(
-                [torch.flatten(1-output), torch.flatten(output)], dim=1
-            )#.reshape(-1, num_output_classes)
+            #val_outputs = torch.stack(
+            #    [torch.flatten(1-output), torch.flatten(output)], dim=1
+            #)#.reshape(-1, num_output_classes)
         
-            #val_nll = nn.MSELoss()(torch.flatten(output), val_imgs.float())
-            val_nll = criterion(val_outputs, imgs.long())
+            val_nll = nn.MSELoss()(torch.flatten(output), val_imgs.float())
+            #val_nll = criterion(val_outputs, imgs.long())
             val_nlls.append(val_nll.item())
     val_loss = np.mean(val_nlls) / np.log(2.) / 2.
 
@@ -235,92 +251,3 @@ writer.flush()
 
 
 # %%
-img = torch.reshape(model(torch.tensor([1]).to(device).float()),(1, 28, 28)) 
-img
-
-
-# %%
-model = LabelToImageNet().to(device)
-# alternatively model = torch.nn.Sequential( ?? )
-
-optimizer = optim.Adam(model.parameters(), lr, weight_decay=reg)
-cross_entropy = nn.CrossEntropyLoss()
-
-train_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
-                                           sampler=SubsetRandomSampler(list(range(N_train))))
-val_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
-                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
-
-def cross_entropy_processer(output):
-    return torch.stack([torch.flatten(1-output), torch.flatten(output)], dim=1)
-
-
-def train(model, train_loder, val_loader, output_processer, loss, n_epochs=100):
-    writer = SummaryWriter()
-
-    train_nll_history = []
-    val_nll_history = []
-
-
-    num_epochs = n_epochs
-    for epoch in range(num_epochs):
-        print(f'Epoch {epoch + 1}/{num_epochs} ', end='')
-        
-        model.train()
-        for i, minibatch in enumerate(train_loader):
-            optimizer.zero_grad()
-            labels = torch.reshape(minibatch[1].to(device), (-1, 1)).float()
-            imgs = torch.flatten(torch.reshape(minibatch[0].to(device), (-1, flatten_img_size)))
-
-            output = model(labels)
-
-            outputs = output_processer(output)
-            
-            #nll = nn.MSELoss()(torch.flatten(output), imgs.float())
-
-            nll = loss(outputs, imgs.long())
-            nll.backward()
-            optimizer.step()
-            
-            train_nll_history.append(nll.item() / np.log(2.) / 2.)
-            
-            if i % 50 == 0:
-                print('.', end='')
-        
-        train_loss = np.mean(train_nll_history) / np.log(2.) / 2.
-        writer.add_scalar("Loss/train", train_loss, epoch)
-
-        # compute nll on validation set
-        val_nlls = []
-        model.eval()
-        with torch.no_grad():
-            for val_minibatch in val_loader:
-                val_labels = torch.reshape(minibatch[1].to(device), (-1, 1)).float()
-                val_imgs = torch.flatten(torch.reshape(minibatch[0].to(device), (-1, flatten_img_size)))
-
-                output = model(val_labels)
-                val_outputs = output_processer(output)
-            
-                #val_nll = nn.MSELoss()(torch.flatten(output), val_imgs.float())
-                val_nll = loss(val_outputs, imgs.long())
-                val_nlls.append(val_nll.item())
-        val_loss = np.mean(val_nlls) / np.log(2.) / 2.
-
-        writer.add_scalar("Loss/val", val_loss, epoch)
-        val_nll_history.append(val_loss)
-        print("loss: ", val_loss)
-        
-        samples = sample_mnist_pixel_cnn(model, 10).detach()
-        plt.figure(figsize=(6,3))
-        img = make_image_grid(samples, nrow=5)
-        plt.imsave(f'./data/nn_module_binary_cross_entropy/epoch{epoch}.jpg', img)
-        #plt.imshow(img)
-        #plt.show()
-    
-    writer.flush()
-
-    return val_nll_history, train_nll_history
-    train(model, train_loader, val_loader, cross_entropy_processer, cross_entropy, n_epochs=100)
-
-
-
