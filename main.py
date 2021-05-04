@@ -297,12 +297,12 @@ def custom_crossentropy(output, target):
 
 
 #gray_cross_module_nn
-model = LabelToImageNet().to(device)
-train_loader = torch.utils.data.DataLoader(train_dataset_gray, batch_size=batch_size,
-                                           sampler=SubsetRandomSampler(list(range(N_train))))
-val_loader = torch.utils.data.DataLoader(train_dataset_gray, batch_size=batch_size,
-                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
-train(model, train_loader, val_loader, custom_crossentropy, custom_loss=True, mse=False, save_path='./data/gray_cross_module_nn', num_epochs=100)
+#model = LabelToImageNet().to(device)
+#train_loader = torch.utils.data.DataLoader(train_dataset_gray, batch_size=batch_size,
+#                                           sampler=SubsetRandomSampler(list(range(N_train))))
+#val_loader = torch.utils.data.DataLoader(train_dataset_gray, batch_size=batch_size,
+#                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
+#train(model, train_loader, val_loader, custom_crossentropy, custom_loss=True, mse=False, save_path='./data/gray_cross_module_nn', num_epochs=100)
 
 
 
@@ -342,4 +342,204 @@ train(model, train_loader, val_loader, custom_crossentropy, custom_loss=True, ms
 
 #train(model, train_loader, val_loader, nn.MSELoss(), mse=True, save_path='./data/binary_mse_sequential', num_epochs=100)
 
+class Encoder(nn.Module):
+    def __init__(self, latent_space_size):
+        super(Encoder, self).__init__()
+        self.hidden_1 = nn.Linear(28 * 28, 500)
+        self.hidden_2 = nn.Linear(500, 250)
+        self.hidden_3 = nn.Linear(250, 10)
+        self.hidden_4 = nn.Linear(10, 10)
+        self.hidden_5 = nn.Linear(10, 20)
+        self.hidden_6 = nn.Linear(20, 10)
+
+        self.mean = nn.Linear(10, latent_space_size)
+        self.log_std = nn.Linear(10, latent_space_size)
+
+    def forward(self, x):
+        x = self.hidden_1(x)
+        x = F.relu(x)
+        x = self.hidden_2(x)
+        x = F.relu(x)
+        x = self.hidden_3(x)
+        x = F.relu(x)
+        x = self.hidden_4(x)
+        x = F.relu(x)
+        x = self.hidden_5(x)
+        x = F.relu(x)
+        x = self.hidden_6(x)
+        x = F.relu(x)
+
+        return self.mean(x), self.log_std(x)
+
+
+class Decoder(nn.Module):
+    def __init__(self, latent_space_size):
+        super(Decoder, self).__init__()
+        self.hidden_1 = nn.Linear(latent_space_size, 10)
+        self.hidden_2 = nn.Linear(10, 20)
+        self.hidden_3 = nn.Linear(20, 10)
+        self.hidden_4 = nn.Linear(10, 10)
+        self.hidden_5 = nn.Linear(10, 250)
+        self.hidden_6 = nn.Linear(250, 500)
+        self.result = nn.Linear(500, 28 * 28)
+        # self.mean = nn.Linear(500, 28 * 28)
+
+        # self.log_std = nn.Linear(500, 28 * 28)
+
+    def forward(self, x):
+        x = self.hidden_1(x)
+        x = F.relu(x)
+        x = self.hidden_2(x)
+        x = F.relu(x)
+        x = self.hidden_3(x)
+        x = F.relu(x)
+        x = self.hidden_4(x)
+        x = F.relu(x)
+        x = self.hidden_5(x)
+        x = F.relu(x)
+        x = self.hidden_6(x)
+        x = F.relu(x)
+
+        return torch.sigmoid(self.result(x))#, self.log_std(x)
+
+
+class VAE(nn.Module):
+    def __init__(self, n_inputs, latent_space_size):
+        super(VAE, self).__init__()
+        self.latent_space_size = latent_space_size
+        self.encoder = Encoder(latent_space_size)
+        self.decoder = Decoder(latent_space_size)
+    
+    def sample_latent(self, m_z, log_std_z):
+        if self.training:
+            eps = torch.randn_like(m_z)
+            sample = eps * log_std_z.exp() + m_z
+            return sample
+        else:
+            return m_z
+
+    def forward(self, x):
+        m_z, log_std_z = self.encoder(x)
+        z = self.sample_latent(m_z, log_std_z)
+        # mu_x, log_std_x = self.decoder(z)
+        reconstruction = self.decoder(z)
+        
+        #return m_z, log_std_z, mu_x, log_std_x
+        return m_z, log_std_z, reconstruction
+
+    def sample(self, n, noise=True):
+        with torch.no_grad():
+            z = torch.randn(n, self.latent_space_size)
+            mu, log_std = self.decoder(z)
+            if noise:
+                z = torch.randn_like(mu) * log_std.exp() + mu
+            else:
+                z = mu
+        return z.cpu().numpy()
+
+
+def vae_loss(image, m_z, log_std_z, reconstruction):
+    BCE = F.binary_cross_entropy(input=reconstruction.view(-1, 28 * 28), target=image.view(-1, 28 * 28), reduction='sum').mean()
+
+    # loss = 0.5 * ((x - mu_x) ** 2 / torch.exp(2 * log_std_x) + log_std_x + np.log(2 * np.pi)).sum(1).mean()
+
+    KL_divergence = -(0.5 * (1 + log_std_z - m_z.pow(2) - torch.exp(2 * log_std_z))).sum(1).mean()
+
+    return (BCE + KL_divergence, BCE, KL_divergence)
+
+
+def train_VAE(vae, dataloader, epochs=3, verbose=False):
+    vae = vae.to(device)
+    optimizer = optim.Adam(params=vae.parameters(), lr=1e-4)
+    vae.train()
+
+    losses = []
+    reconstruction_losses = []
+    KL_losses = []
+    all_losses = [] 
+
+    final_KL = 0
+    final_reconstr = 0
+
+    for epoch in range(epochs):
+        losses.append(0)
+        n_batches = 0
+
+        for sample in dataloader:
+            sample = torch.reshape(sample[0], (-1, 28 * 28)).to(device).float()
+            optimizer.zero_grad()
+            mu_z, log_std_z, reconstruction = vae(sample)
+
+            (loss, reconstruction_loss, KL_loss) = vae_loss(sample, mu_z, log_std_z, reconstruction)
+            loss.backward()
+
+            optimizer.step()
+            losses[-1] += loss.item()
+            final_KL += KL_loss.item()
+            final_reconstr += reconstruction_loss.item()
+
+            reconstruction_losses.append(reconstruction_loss.item())
+            KL_losses.append(KL_loss.item())
+            all_losses.append(loss.item())
+
+            n_batches += 1
+
+        losses[-1] /= n_batches
+        final_KL /= n_batches
+        final_reconstr /= n_batches
+
+        if not verbose:
+            print('Epoch [%d / %d] average reconstruction error: %f' % (epoch + 1, epochs, losses[-1]))  
+    
+    return all_losses, reconstruction_losses, KL_losses, losses[-1], final_reconstr, final_KL
+
+def print_training_results(all_losses, reconstruction_losses, KL_losses, y_lim=(-1, 10), x_lim=(0, 30000)):
+    figure(figsize=(8, 6), dpi=80)
+    plt.ylim(y_lim[0], y_lim[1])
+    plt.xlim(x_lim[0], x_lim[1])
+
+
+    line_loss = plt.plot(range(len(all_losses)), all_losses, color='palegreen', label='ELBO')
+    line_rec = plt.plot(range(len(reconstruction_losses)), reconstruction_losses, color='gold', label='reconstruction_loss')
+    line_kl = plt.plot(range(len(KL_losses)), KL_losses, color='mediumorchid', label='KL_loss')
+    plt.legend()
+    plt.show()
+
+
+def display_latents(vae, val_loader):
+    color_mapping = {
+        0: 'red',
+        1: 'blue',
+        2: 'green',
+        3: 'yellow',
+        4: 'pink',
+        5: 'blueviolet',
+        6: 'black',
+        7: 'grey',
+        8: 'salmon',
+        9: 'peru'
+    }
+
+    scatter = {color:[[], []] for color in color_mapping.values()}
+
+    for sample in val_loader:
+        img = sample[0]
+        labels = sample[1].detach().cpu().numpy()
+        img = torch.reshape(img, (-1, 28 * 28)).to(device).float()
+        
+        mu_z, log_std_z = vae.encoder(img)
+        z = (torch.randn_like(mu_z) * log_std_z.exp() + mu_z).detach().cpu().numpy()
+        for i in range(z.shape[0]):
+            plt.scatter([z[i][0]], [z[i][1]], color=color_mapping[labels[i]])
+
+
+model = VAE(28 * 28, 2).to(device)
+train_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
+                                           sampler=SubsetRandomSampler(list(range(N_train))))
+val_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
+                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
+train_VAE(model, train_loader)
+
+
+display_latents(model, val_loader)
 # %%
