@@ -145,6 +145,37 @@ def get_sequential_model():
         nn.Sigmoid()
     )
 
+class VAE(nn.Module):
+    def __init__(self, output_size=28*28):
+        super().__init__()
+        
+        self.hidden_1 = nn.Linear(1, 20)
+        self.hidden_2 = nn.Linear(20, 10)
+        self.hidden_3 = nn.Linear(10, 10)
+        self.hidden_4 = nn.Linear(10, 250)
+        self.hidden_5 = nn.Linear(250, 500)
+        self.hidden_6 = nn.Linear(500, 28*28)
+        #self.hidden_3 = nn.Linear(500, 250)
+        #self.hidden_4 = nn.Linear(250, 28*28)
+        #self.hidden_5 = nn.Linear(*16, 28*28)        
+    
+    def forward(self, x):
+        #x = torch.Tensor([[int(i == z) for i in range(10)] for z in x]).to(device).float()
+        x = self.hidden_1(x)
+        x =F.relu(x)
+        x = self.hidden_2(x)
+        x = F.relu(x)
+        x = self.hidden_3(x)
+        x = F.relu(x)
+        x = self.hidden_4(x)
+        x = F.relu(x)
+        x = self.hidden_5(x)
+        x = F.relu(x)
+        x = self.hidden_6(x)
+        #x = F.relu(x)
+        x = torch.sigmoid(x)
+        return x
+
 # %%
 lr = 1e-3
 reg = 1e-4
@@ -181,7 +212,7 @@ def make_float_processor(imgs):
     return imgs.float()
 
 
-def train(model, train_loader, val_loader, mse=False, save_path='./data/test', num_epochs=100):
+def train(model, train_loader, val_loader, loss, custom_loss=False, mse=False, save_path='./data/test', num_epochs=100):
     train_nll_history = []
     val_nll_history = []
     optimizer = optim.Adam(model.parameters(), lr, weight_decay=reg)
@@ -197,12 +228,17 @@ def train(model, train_loader, val_loader, mse=False, save_path='./data/test', n
             output = model(labels)
             
             if mse:
-                nll = nn.MSELoss()(torch.flatten(output), imgs.float())
+                nll = loss(torch.flatten(output), imgs.float())
             else:
-                outputs = torch.stack(
-                    [torch.flatten(1-output), torch.flatten(output)], dim=1
-                )
-                nll = nn.CrossEntropyLoss()(outputs, imgs.long())
+                if not custom_loss:
+                    outputs = torch.stack(
+                        [torch.flatten(1 - output), torch.flatten(output)], dim=1
+                    )
+                    nll = loss(outputs, imgs.long())
+
+                else:
+                    outputs = torch.flatten(output)
+                    nll = loss(outputs, imgs)
 
             nll.backward()
             optimizer.step()
@@ -226,12 +262,18 @@ def train(model, train_loader, val_loader, mse=False, save_path='./data/test', n
 
                 output = model(val_labels)
                 if mse:
-                    val_nll = nn.MSELoss()(torch.flatten(output), imgs.float())
+                    val_nll = loss(torch.flatten(output), imgs.float())
                 else:
-                    outputs = torch.stack(
-                        [torch.flatten(1-output), torch.flatten(output)], dim=1
-                    )
-                    val_nll = nn.CrossEntropyLoss()(outputs, imgs.long())
+                    if not custom_loss:
+                        outputs = torch.stack(
+                            [torch.flatten(1 - output), torch.flatten(output)], dim=1
+                        )
+                        val_nll = loss(outputs, imgs.long())
+
+                    else:
+                        outputs = torch.flatten(output)
+                        val_nll = loss(outputs, imgs)
+
             
                 val_nlls.append(val_nll.item())
         val_loss = np.mean(val_nlls) / np.log(2.) / 2.
@@ -250,6 +292,9 @@ def train(model, train_loader, val_loader, mse=False, save_path='./data/test', n
     writer.flush()
 
 
+def custom_crossentropy(output, target):
+    return torch.sum(-target * torch.log(output) - (1 - target) * torch.log(1 - output)) / output.size()[0]
+
 
 #gray_cross_module_nn
 model = LabelToImageNet().to(device)
@@ -257,7 +302,7 @@ train_loader = torch.utils.data.DataLoader(train_dataset_gray, batch_size=batch_
                                            sampler=SubsetRandomSampler(list(range(N_train))))
 val_loader = torch.utils.data.DataLoader(train_dataset_gray, batch_size=batch_size,
                                          sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
-train(model, train_loader, val_loader, mse=False, save_path='./data/gray_cross_module_nn', num_epochs=100)
+train(model, train_loader, val_loader, custom_crossentropy, custom_loss=True, mse=False, save_path='./data/gray_cross_module_nn', num_epochs=100)
 
 
 
@@ -267,7 +312,7 @@ train(model, train_loader, val_loader, mse=False, save_path='./data/gray_cross_m
 #                                           sampler=SubsetRandomSampler(list(range(N_train))))
 #val_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
 #                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
-#train(model, train_loader, val_loader, mse=False, save_path='./data/binary_cross_module_nn', num_epochs=100)
+#train(model, train_loader, val_loader, nn.CrossEntropyLoss(), mse=False, save_path='./data/binary_cross_module_nn', num_epochs=100)
 
 
 #binary_cross_sequential
@@ -276,7 +321,7 @@ train(model, train_loader, val_loader, mse=False, save_path='./data/gray_cross_m
 #                                           sampler=SubsetRandomSampler(list(range(N_train))))
 #val_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
 #                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
-#train(model, train_loader, val_loader, mse=False, save_path='./data/binary_cross_sequential', num_epochs=100)
+#train(model, train_loader, val_loader, nn.CrossEntropyLoss(), mse=False, save_path='./data/binary_cross_sequential', num_epochs=100)
 
 
 #gray_mse_sequential
@@ -285,7 +330,7 @@ train(model, train_loader, val_loader, mse=False, save_path='./data/gray_cross_m
 #                                           sampler=SubsetRandomSampler(list(range(N_train))))
 #val_loader = torch.utils.data.DataLoader(train_dataset_gray, batch_size=batch_size,
 #                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
-#train(model, train_loader, val_loader, mse=True, save_path='./data/gray_mse_sequential', num_epochs=100)
+#train(model, train_loader, val_loader, nn.MSELoss(), mse=True, save_path='./data/gray_mse_sequential', num_epochs=100)
 
 
 #binary_mse_sequential
@@ -295,6 +340,6 @@ train(model, train_loader, val_loader, mse=False, save_path='./data/gray_cross_m
 #val_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
 #                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
 
-#train(model, train_loader, val_loader, mse=True, save_path='./data/binary_mse_sequential', num_epochs=100)
+#train(model, train_loader, val_loader, nn.MSELoss(), mse=True, save_path='./data/binary_mse_sequential', num_epochs=100)
 
 # %%
