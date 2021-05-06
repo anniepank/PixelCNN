@@ -412,6 +412,7 @@ class VAE(nn.Module):
     
     def sample_latent(self, m_z, log_std_z):
         if self.training:
+            #print('in training')
             eps = torch.randn_like(m_z)
             sample = eps * log_std_z.exp() + m_z
             return sample
@@ -506,6 +507,112 @@ def print_training_results(all_losses, reconstruction_losses, KL_losses, y_lim=(
     plt.show()
 
 
+def log_normal_pdf(sample, mean, logvar):
+  log2pi = np.log(2. * np.pi)
+  return -0.5 * ((sample - mean) ** 2. * torch.exp(-logvar) + logvar + log2pi)
+
+
+def averaged_vae_loss(vae, x):
+    x = torch.reshape(x, (-1, 28 * 28)).to(device).float()
+    m_z, log_std_z = vae.encoder(x)
+    var_z = torch.exp(2 * log_std_z)[0]
+    
+    z = []
+    loss = 0
+    for i in range(10):
+        
+        z.append(vae.sample_latent(m_z, log_std_z))
+        reconstruction = vae.decoder(z[i])
+        #p_x_z = F.binary_cross_entropy(input=reconstruction.view(-1, 28 * 28), target=x.view(-1, 28 * 28), reduction='sum')
+        logpx_z = F.binary_cross_entropy(input=reconstruction.view(-1, 28 * 28), target=x.view(-1, 28 * 28), reduction='mean')
+        
+        logpz = log_normal_pdf(z[0], torch.Tensor([0., 0.]).to(device).float(), torch.Tensor([0., 0.]).to(device).float()).mean()
+        logqz_x = log_normal_pdf(z[0], m_z, log_std_z).mean()
+        
+        #p_z = -0.5 * (z[i][0][0] ** 2 + z[i][0][1] ** 2)
+        #p_z_x = -0.5 * (
+        #    var_z[0] * var_z[1] + \
+        #    ((z[i][0][0] - m_z) / var_z[0] ** 2 + (z[i][0][1] - m_z) / var_z[1] ** 2)
+        #    ).sum() / np.log(2)
+        #loss += p_x_z + p_z - p_z_x
+        loss += logpx_z + logpz - logqz_x
+
+    loss /= 10
+
+    # loss = 0.5 * ((x - mu_x) ** 2 / torch.exp(2 * log_std_x) + log_std_x + np.log(2 * np.pi)).sum(1).mean()
+
+    #KL_divergence = -(0.5 * (1 + log_std_z - m_z.pow(2) - torch.exp(2 * log_std_z))).mean()
+    #KL_divergence = -(0.5 * torch.sum(1 + log_std_z - m_z.pow(2) - log_std_z.exp()))
+    #return (loss + KL_divergence, loss, KL_divergence)
+    print(-loss)
+    return (-loss, loss, None)
+
+
+
+def train_custom_loss_VAE(vae, dataloader, epochs=3, verbose=False):
+    vae = vae.to(device)
+    optimizer = optim.Adam(params=vae.parameters(), lr=1e-4)
+    vae.train()
+
+    losses = []
+    reconstruction_losses = []
+    KL_losses = []
+    all_losses = [] 
+
+    final_KL = 0
+    final_reconstr = 0
+
+    for epoch in range(epochs):
+        losses.append(0)
+        n_batches = 0
+
+        for sample in dataloader:
+            optimizer.zero_grad()
+
+            x = sample[0]
+            
+            x = torch.reshape(x, (-1, 28 * 28)).to(device).float()
+            x = torch.cat(10 * [x])
+            
+            mu_z, log_std_z = vae.encoder(x)
+            z = vae.sample_latent(mu_z, log_std_z)
+
+            x_hat = vae.decoder(z)
+
+            cross_entropy = F.binary_cross_entropy(x_hat, x, reduction='none')
+            logpx_z = -cross_entropy.sum(dim=(1))
+
+            std = torch.exp(log_std_z)
+
+            p = torch.distributions.Normal(torch.zeros_like(mu_z), torch.ones_like(std))
+            q = torch.distributions.Normal(mu_z, std)
+
+            logqz_x = q.log_prob(z)
+            logpz = p.log_prob(z)
+
+            logqz_x = logqz_x.sum(dim=(1))
+            logpz = logpz.sum(dim=(1))
+
+            elbo = -(logpx_z + logpz - logqz_x)
+
+            loss = elbo.mean()
+
+            loss.backward()
+
+            optimizer.step()
+            losses[-1] += loss.item()
+            n_batches += 1
+
+            #print(loss)
+        losses[-1] /= n_batches
+    
+        if not verbose:
+            print('Epoch [%d / %d] average reconstruction error: %f' % (epoch + 1, epochs, losses[-1]))  
+    
+    return all_losses, reconstruction_losses, KL_losses, losses[-1], final_reconstr, final_KL
+
+
+
 def display_latents(vae, val_loader):
     color_mapping = {
         0: 'red',
@@ -532,14 +639,20 @@ def display_latents(vae, val_loader):
         for i in range(z.shape[0]):
             plt.scatter([z[i][0]], [z[i][1]], color=color_mapping[labels[i]])
 
-
-model = VAE(28 * 28, 2).to(device)
-train_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
-                                           sampler=SubsetRandomSampler(list(range(N_train))))
-val_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
-                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
-train_VAE(model, train_loader)
-
-
-display_latents(model, val_loader)
 # %%
+#model = VAE(28 * 28, 2).to(device)
+#train_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
+#                                           sampler=SubsetRandomSampler(list(range(N_train))))
+##val_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=batch_size,
+ #                                        sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
+#train_VAE(model, train_loader)
+
+
+#display_latents(model, val_loader)
+
+model = VAE(28 * 28, 2).to(device).float()
+train_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=64,
+                                           sampler=SubsetRandomSampler(list(range(N_train))))
+val_loader = torch.utils.data.DataLoader(train_dataset_binary, batch_size=64,
+                                         sampler=SubsetRandomSampler(list(range(N_train, N_train + N_val))))
+train_custom_loss_VAE(model, train_loader, epochs=5)
