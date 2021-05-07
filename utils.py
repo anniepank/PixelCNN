@@ -45,21 +45,6 @@ class LabelToImageNet(nn.Module):
         x = torch.sigmoid(x)
         return x
 
-    def calculate_nll(self, output, imgs, mse, custom_loss, loss):
-        if mse:
-            nll = loss(torch.flatten(output), imgs.float())
-        else:
-            if not custom_loss:
-                outputs = torch.stack(
-                    [torch.flatten(1 - output), torch.flatten(output)], dim=1
-                )
-                nll = loss(outputs, imgs.long())
-
-            else:
-                outputs = torch.flatten(output)
-                nll = loss(outputs, imgs)
-        return nll
-
 
 class SimpleEncoder(nn.Module):
     def __init__(self, latent_space_size):
@@ -242,7 +227,7 @@ def crossentropy_for_gray(output, target):
     return torch.sum(-target * torch.log(output) - (1 - target) * torch.log(1 - output)) / output.size()[0]
 
 
-def sample_images_from_vae(model, n, noise=False):
+def sample_images_from_vae(model, n, device, noise=False):
     plt.figure(figsize=(8, 8), dpi=80)
 
     with torch.no_grad():
@@ -260,7 +245,7 @@ def sample_images_from_vae(model, n, noise=False):
     plt.imshow(1 - grid, cmap='Greys')
 
 
-def display_latents(vae, val_loader):
+def display_latents(vae, val_loader, device):
     color_mapping = {
         0: 'red',
         1: 'blue',
